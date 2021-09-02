@@ -558,7 +558,7 @@ func (ps *ProxySession) doLoop(mongoConn *MongoConnectionWrapper, retryError *Pr
 			return nil, NewStackErrorf("error reading wire message from mongo conn id=%v remoteRs=%s. err=%v", mongoConn.conn.ID(), remoteRs, err)
 		}
 
-		respomseDurationTimerStart := time.Now()
+		responseDurationTimerStart := time.Now()
 		if ps.isMetricsEnabled {
 			if !hasReceivedFirstResponse {
 				elaspedDbRoundTripTime := time.Since(dbRoundTripTimerStart).Seconds()
@@ -650,7 +650,7 @@ func (ps *ProxySession) doLoop(mongoConn *MongoConnectionWrapper, retryError *Pr
 
 		ps.logMessageTrace(ps.proxy.logger, ps.proxy.Config.TraceConnPool, resp)
 		if ps.isMetricsEnabled {
-			responseDurationElasped := time.Since(respomseDurationTimerStart).Seconds()
+			responseDurationElasped := time.Since(responseDurationTimerStart).Seconds()
 			responseDurationHook.ObserveWithLabels(responseDurationElasped, map[string]string{"type": "response_total", "opertationType": metricOperationType})
 		}
 
