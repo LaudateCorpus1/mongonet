@@ -318,7 +318,7 @@ func wrapNetworkError(err error) error {
 }
 
 func (ps *ProxySession) doLoop(mongoConn *MongoConnectionWrapper, retryError *ProxyRetryError, remoteRs string) (*MongoConnectionWrapper, error) {
-	var requestDurationHook, responseDurationHook, requestErrorsHook, responseErrorsHook, dbRoundTripHook MetricsHook
+	var requestDurationHook, responseDurationHook, totalDurationHook, requestErrorsHook, responseErrorsHook, dbRoundTripHook MetricsHook
 
 	if ps.isMetricsEnabled {
 		var ok bool
@@ -329,6 +329,10 @@ func (ps *ProxySession) doLoop(mongoConn *MongoConnectionWrapper, retryError *Pr
 		responseDurationHook, ok = ps.hooks["responseDurationHook"]
 		if !ok {
 			return nil, fmt.Errorf("could not access the response processing duration metric hook")
+		}
+		totalDurationHook, ok = ps.hooks["totalDurationHook"]
+		if !ok {
+			return nil, fmt.Errorf("could not access the total processing duration metric hook")
 		}
 		requestErrorsHook, ok = ps.hooks["requestErrorsHook"]
 		if !ok {
@@ -375,6 +379,7 @@ func (ps *ProxySession) doLoop(mongoConn *MongoConnectionWrapper, retryError *Pr
 
 	startServerSelection := time.Now()
 	requestProcessingStartTime := time.Now()
+	totalProxyProcessingTimeElaspsed := 0.0
 
 	var rp *readpref.ReadPref = ps.proxy.defaultReadPref
 	if ps.proxy.Config.ConnectionMode == util.Cluster {
@@ -475,11 +480,6 @@ func (ps *ProxySession) doLoop(mongoConn *MongoConnectionWrapper, retryError *Pr
 		ps.logTrace(ps.proxy.logger, ps.proxy.Config.TraceConnPool, "got new connection %v using connection mode=%v readpref=%v remoteRs=%s", mongoConn.conn.ID(), ps.proxy.Config.ConnectionMode, rp, remoteRs)
 	}
 
-	if ps.isMetricsEnabled {
-		requestProcessingElaspedTime := time.Since(requestProcessingStartTime).Seconds()
-		requestDurationHook.ObserveWithLabels(requestProcessingElaspedTime, map[string]string{"type": "request_total", "operation": metricOperationType})
-	}
-
 	serverSelectionTime := time.Since(startServerSelection).Milliseconds()
 
 	if ps.proxy.Config.ConnectionMode == util.Cluster {
@@ -518,6 +518,15 @@ func (ps *ProxySession) doLoop(mongoConn *MongoConnectionWrapper, retryError *Pr
 				}
 			}
 		}
+	}
+
+	if ps.isMetricsEnabled {
+		requestProcessingElaspedTime := time.Since(requestProcessingStartTime).Seconds()
+		requestDurationHook.ObserveWithLabels(requestProcessingElaspedTime, map[string]string{"type": "request_total", "operation": metricOperationType})
+		totalProxyProcessingTimeElaspsed += requestProcessingElaspedTime
+		defer func() {
+			totalDurationHook.ObserveWithLabels(totalProxyProcessingTimeElaspsed, map[string]string{"type": "request_total", "operation": metricOperationType})
+		}()
 	}
 
 	// Send message to mongo
@@ -652,6 +661,7 @@ func (ps *ProxySession) doLoop(mongoConn *MongoConnectionWrapper, retryError *Pr
 		if ps.isMetricsEnabled {
 			responseDurationElasped := time.Since(responseDurationTimerStart).Seconds()
 			responseDurationHook.ObserveWithLabels(responseDurationElasped, map[string]string{"type": "response_total", "opertationType": metricOperationType})
+			totalProxyProcessingTimeElaspsed += responseDurationElasped
 		}
 
 		// Send message back to user
