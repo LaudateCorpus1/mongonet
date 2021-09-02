@@ -47,7 +47,7 @@ type MetricsHookFactory interface {
 }
 
 type ResponseInterceptor interface {
-	InterceptMongoToClient(m Message, serverAddress address.Address, isRemote bool, retryAttemptsExhausted bool) (Message, error)
+	InterceptMongoToClient(m Message, serverAddress address.Address, isRemote bool, retryAttemptsExhausted bool, operationType string) (Message, error)
 	// ProcessExecutionTime records the execution time of an operation from startTime, subtracting
 	// time while execution was paused, pausedExecutionTimeMicros (i.e. while sending the message back to client)
 	ProcessExecutionTime(startTime time.Time, pausedExecutionTimeMicros int64)
@@ -633,7 +633,7 @@ func (ps *ProxySession) doLoop(mongoConn *MongoConnectionWrapper, retryError *Pr
 			}
 		}
 		if respInter != nil {
-			resp, err = respInter.InterceptMongoToClient(resp, mongoConn.conn.Address(), remoteRs != "", retryAttemptsExhausted)
+			resp, err = respInter.InterceptMongoToClient(resp, mongoConn.conn.Address(), remoteRs != "", retryAttemptsExhausted, metricOperationType)
 			if err != nil {
 				if ps.isMetricsEnabled {
 					hookErr := responseErrorsHook.IncCounterGauge()

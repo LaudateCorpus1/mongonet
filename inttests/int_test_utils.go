@@ -71,7 +71,7 @@ func (ff *FindFixer) ProcessExecutionTime(startTime time.Time, pausedExecutionTi
 	// no-op
 }
 
-func (ff *FindFixer) InterceptMongoToClient(m Message, address address.Address, isRemote bool, retryAttemptsExhausted bool) (Message, error) {
+func (ff *FindFixer) InterceptMongoToClient(m Message, address address.Address, isRemote bool, retryAttemptsExhausted bool, operationType string) (Message, error) {
 	switch mm := m.(type) {
 	case *MessageMessage:
 
@@ -113,7 +113,7 @@ func (ff *FindFixerForRetry) ProcessExecutionTime(startTime time.Time, pausedExe
 	// no-op
 }
 
-func (ff *FindFixerForRetry) InterceptMongoToClient(m Message, address address.Address, isRemote bool, retryAttemptsExhausted bool) (Message, error) {
+func (ff *FindFixerForRetry) InterceptMongoToClient(m Message, address address.Address, isRemote bool, retryAttemptsExhausted bool, operationType string) (Message, error) {
 	switch mm := m.(type) {
 	case *MessageMessage:
 
@@ -236,7 +236,7 @@ func (mri *IsMasterFixer) ProcessExecutionTime(startTime time.Time, pausedExecut
 	// no-op
 }
 
-func (mri *IsMasterFixer) InterceptMongoToClient(m Message, address address.Address, isRemote bool, retryAttemptsExhausted bool) (Message, error) {
+func (mri *IsMasterFixer) InterceptMongoToClient(m Message, address address.Address, isRemote bool, retryAttemptsExhausted bool, operationType string) (Message, error) {
 	switch mm := m.(type) {
 	case *ReplyMessage:
 		var err error
