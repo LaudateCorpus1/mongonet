@@ -322,23 +322,24 @@ func (myi *MyInterceptor) InterceptClientToMongo(m Message, previousResult Simpl
 	ResponseInterceptor,
 	string,
 	address.Address,
+	string,
 	error,
 ) {
 	switch mm := m.(type) {
 	case *QueryMessage:
 		if !NamespaceIsCommand(mm.Namespace) {
-			return m, nil, "", "", nil
+			return m, nil, "", "", "", nil
 		}
 
 		query, err := mm.Query.ToBSOND()
 		if err != nil || len(query) == 0 {
 			// let mongod handle error message
-			return m, nil, "", "", nil
+			return m, nil, "", "", "", nil
 		}
 
 		cmdName := strings.ToLower(query[0].Key)
 		if cmdName != "ismaster" {
-			return m, nil, "", "", nil
+			return m, nil, "", "", "", nil
 		}
 		// remove client
 		if idx := BSONIndexOf(query, "client"); idx >= 0 {
@@ -357,7 +358,7 @@ func (myi *MyInterceptor) InterceptClientToMongo(m Message, previousResult Simpl
 			panic(err)
 		}
 		mm.Query = qb
-		return mm, &IsMasterFixer{myi.mode, myi.mongoPort, myi.proxyPort}, "", "", nil
+		return mm, &IsMasterFixer{myi.mode, myi.mongoPort, myi.proxyPort}, "", "", "", nil
 	case *MessageMessage:
 		doc, bodySection, err := MessageMessageToBSOND(mm)
 		if err != nil {
@@ -389,7 +390,7 @@ func (myi *MyInterceptor) InterceptClientToMongo(m Message, previousResult Simpl
 		case "ismaster":
 			// streaming isMaster is enabled. no need to fix
 			if !myi.disableStreamingIsMaster {
-				return mm, nil, rsName, "", nil
+				return mm, nil, rsName, "", "", nil
 			}
 			// fixing isMaster request when streamingIsMaster is disabled
 			if idx := BSONIndexOf(doc, "maxAwaitTimeMS"); idx >= 0 {
@@ -403,31 +404,31 @@ func (myi *MyInterceptor) InterceptClientToMongo(m Message, previousResult Simpl
 				panic(err)
 			}
 			bodySection.Body = n
-			return mm, &IsMasterFixer{myi.mode, myi.mongoPort, myi.proxyPort}, rsName, "", nil
+			return mm, &IsMasterFixer{myi.mode, myi.mongoPort, myi.proxyPort}, rsName, "", "", nil
 		case "find":
 			if db == util.RetryOnRemoteDbNameForTests {
-				return mm, &FindFixer{mm, true, myi.cursorManager, myi.ps}, "", "", nil
+				return mm, &FindFixer{mm, true, myi.cursorManager, myi.ps}, "", "", "", nil
 			} else if db == util.RetryOnRemoteDbMultiple {
-				return mm, &FindFixerForRetry{mm, true, myi.cursorManager, myi.ps}, "", "", nil
+				return mm, &FindFixerForRetry{mm, true, myi.cursorManager, myi.ps}, "", "", "", nil
 			}
-			return mm, &FindFixer{mm, false, myi.cursorManager, myi.ps}, rsName, "", nil
+			return mm, &FindFixer{mm, false, myi.cursorManager, myi.ps}, rsName, "", "", nil
 		case "getmore":
 			cid, ok := doc[0].Value.(int64)
 			if !ok {
 				panic(fmt.Sprintf("got %T for cursor id but expected int64", cid))
 			}
 			addr, _ := myi.cursorManager.Load(cid)
-			return mm, nil, rsName, addr, nil
+			return mm, nil, rsName, addr, "", nil
 		case "mongonetisconnectionproxied":
 			// test command
-			return nil, nil, "", "", myi.ps.RespondToCommandMakeBSON(mm, "proxied", myi.ps.IsProxied())
+			return nil, nil, "", "", "", myi.ps.RespondToCommandMakeBSON(mm, "proxied", myi.ps.IsProxied())
 
 		default:
-			return mm, nil, rsName, "", nil
+			return mm, nil, rsName, "", "", nil
 		}
 	}
 
-	return m, nil, "", "", nil
+	return m, nil, "", "", "", nil
 }
 
 const charset = "abcdefghijklmnopqrstuvwxyz" +
