@@ -34,6 +34,7 @@ type ProxySession struct {
 type MetricsHook interface {
 	StartTimer() error
 	StopTimer()
+	ObserveWithLabels(val float64, labels map[string]string) error
 	SetGauge(val float64) error
 	AddCounterGauge(val float64) error
 	SubGauge(val float64) error
@@ -58,6 +59,7 @@ type ProxyInterceptor interface {
 		ri ResponseInterceptor,
 		remoteRs string,
 		pinnedAddress address.Address,
+		metricOperationType string,
 		err error,
 	)
 	Close()
@@ -316,7 +318,7 @@ func wrapNetworkError(err error) error {
 }
 
 func (ps *ProxySession) doLoop(mongoConn *MongoConnectionWrapper, retryError *ProxyRetryError, remoteRs string) (*MongoConnectionWrapper, error) {
-	var requestDurationHook, responseDurationHook, requestErrorsHook, responseErrorsHook MetricsHook
+	var requestDurationHook, responseDurationHook, requestErrorsHook, responseErrorsHook, dbRoundTripHook MetricsHook
 
 	if ps.isMetricsEnabled {
 		var ok bool
@@ -335,6 +337,10 @@ func (ps *ProxySession) doLoop(mongoConn *MongoConnectionWrapper, retryError *Pr
 		responseErrorsHook, ok = ps.hooks["responseErrorsHook"]
 		if !ok {
 			return nil, fmt.Errorf("could not access the response processing errors metric hook")
+		}
+		dbRoundTripHook, ok = ps.hooks["dbRoundTripHook"]
+		if !ok {
+			return nil, fmt.Errorf("could not access the db round trip time metric hook")
 		}
 	}
 
@@ -367,16 +373,8 @@ func (ps *ProxySession) doLoop(mongoConn *MongoConnectionWrapper, retryError *Pr
 		ps.logTrace(ps.proxy.logger, ps.proxy.Config.TraceConnPool, "retrying a message from client on rs=%v", retryError.RetryOnRs)
 	}
 
-	isRequestTimerStarted := false
 	startServerSelection := time.Now()
-	if ps.isMetricsEnabled {
-		hookErr := requestDurationHook.StartTimer()
-		if hookErr != nil {
-			ps.proxy.logger.Logf(slogger.WARN, "failed to start request duration metric hook timer %v", hookErr)
-		} else {
-			isRequestTimerStarted = true
-		}
-	}
+	requestProcessingStartTime := time.Now()
 
 	var rp *readpref.ReadPref = ps.proxy.defaultReadPref
 	if ps.proxy.Config.ConnectionMode == util.Cluster {
@@ -403,10 +401,11 @@ func (ps *ProxySession) doLoop(mongoConn *MongoConnectionWrapper, retryError *Pr
 	var respInter ResponseInterceptor
 	var pinnedAddress address.Address
 
+	metricOperationType := "Unknown"
 	pausedExecutionTimeMicros := int64(0)
 	if ps.interceptor != nil {
 		ps.interceptor.TrackRequest(m.Header())
-		m, respInter, remoteRs, pinnedAddress, err = ps.interceptor.InterceptClientToMongo(m, previousRes)
+		m, respInter, remoteRs, pinnedAddress, metricOperationType, err = ps.interceptor.InterceptClientToMongo(m, previousRes)
 		defer func() {
 			if respInter != nil {
 				respInter.ProcessExecutionTime(startServerSelection, pausedExecutionTimeMicros)
@@ -476,11 +475,12 @@ func (ps *ProxySession) doLoop(mongoConn *MongoConnectionWrapper, retryError *Pr
 		ps.logTrace(ps.proxy.logger, ps.proxy.Config.TraceConnPool, "got new connection %v using connection mode=%v readpref=%v remoteRs=%s", mongoConn.conn.ID(), ps.proxy.Config.ConnectionMode, rp, remoteRs)
 	}
 
-	if ps.isMetricsEnabled && isRequestTimerStarted {
-		requestDurationHook.StopTimer()
+	if ps.isMetricsEnabled {
+		requestProcessingElaspedTime := time.Since(requestProcessingStartTime).Seconds()
+		requestDurationHook.ObserveWithLabels(requestProcessingElaspedTime, map[string]string{"type": "request_total", "operation": metricOperationType})
 	}
 
-	serverSelectionTime := time.Now().Sub(startServerSelection).Milliseconds()
+	serverSelectionTime := time.Since(startServerSelection).Milliseconds()
 
 	if ps.proxy.Config.ConnectionMode == util.Cluster {
 		// only concerned about OP_MSG at this point
@@ -521,6 +521,7 @@ func (ps *ProxySession) doLoop(mongoConn *MongoConnectionWrapper, retryError *Pr
 	}
 
 	// Send message to mongo
+	dbRoundTripTimerStart := time.Now()
 	err = mongoConn.conn.WriteWireMessage(ps.proxy.Context, m.Serialize())
 	if err != nil {
 		if ps.isMetricsEnabled {
@@ -539,6 +540,7 @@ func (ps *ProxySession) doLoop(mongoConn *MongoConnectionWrapper, retryError *Pr
 	defer mongoConn.Close(ps)
 
 	inExhaustMode := m.IsExhaust()
+	hasReceivedFirstResponse := false
 
 	for {
 		// Read message back from mongo
@@ -556,13 +558,12 @@ func (ps *ProxySession) doLoop(mongoConn *MongoConnectionWrapper, retryError *Pr
 			return nil, NewStackErrorf("error reading wire message from mongo conn id=%v remoteRs=%s. err=%v", mongoConn.conn.ID(), remoteRs, err)
 		}
 
-		isResponseTimerStarted := false
+		respomseDurationTimerStart := time.Now()
 		if ps.isMetricsEnabled {
-			hookErr := responseDurationHook.StartTimer()
-			if hookErr != nil {
-				ps.proxy.logger.Logf(slogger.WARN, "failed to start reponse duration metric hook timer %v", hookErr)
-			} else {
-				isResponseTimerStarted = true
+			if !hasReceivedFirstResponse {
+				elaspedDbRoundTripTime := time.Since(dbRoundTripTimerStart).Seconds()
+				dbRoundTripHook.ObserveWithLabels(elaspedDbRoundTripTime, map[string]string{"operationType": metricOperationType})
+				hasReceivedFirstResponse = true
 			}
 		}
 
@@ -648,8 +649,9 @@ func (ps *ProxySession) doLoop(mongoConn *MongoConnectionWrapper, retryError *Pr
 		}
 
 		ps.logMessageTrace(ps.proxy.logger, ps.proxy.Config.TraceConnPool, resp)
-		if ps.isMetricsEnabled && isResponseTimerStarted {
-			responseDurationHook.StopTimer()
+		if ps.isMetricsEnabled {
+			responseDurationElasped := time.Since(respomseDurationTimerStart).Seconds()
+			responseDurationHook.ObserveWithLabels(responseDurationElasped, map[string]string{"type": "response_total", "opertationType": metricOperationType})
 		}
 
 		// Send message back to user
