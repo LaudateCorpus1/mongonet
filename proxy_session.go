@@ -525,15 +525,25 @@ func (ps *ProxySession) doLoop(mongoConn *MongoConnectionWrapper, retryError *Pr
 		requestDurationHook.ObserveWithLabels(requestProcessingElaspedTime, map[string]string{"type": "request_total", "operation": metricOperationType})
 		totalProxyProcessingTimeElaspsed += requestProcessingElaspedTime
 		defer func() {
-			totalDurationHook.ObserveWithLabels(totalProxyProcessingTimeElaspsed, map[string]string{"type": "request_total", "operation": metricOperationType})
+			hookErr := totalDurationHook.ObserveWithLabels(totalProxyProcessingTimeElaspsed, map[string]string{"type": "request_total", "operation": metricOperationType})
+			if hookErr != nil {
+				ps.proxy.logger.Logf(slogger.WARN, "failed to observe totalDurationHook %v", hookErr)
+			}
 		}()
 	}
 
 	// Send message to mongo
+	totalDBRoundtripTime := 0.0
 	dbRoundTripTimerStart := time.Now()
 	err = mongoConn.conn.WriteWireMessage(ps.proxy.Context, m.Serialize())
 	if err != nil {
 		if ps.isMetricsEnabled {
+			defer func() {
+				hookErr := dbRoundTripHook.ObserveWithLabels(totalDBRoundtripTime, map[string]string{"operation": metricOperationType})
+				if hookErr != nil {
+					ps.proxy.logger.Logf(slogger.WARN, "failed to observe dbRoundTripHook %v", hookErr)
+				}
+			}()
 			hookErr := requestErrorsHook.IncCounterGauge()
 			if hookErr != nil {
 				ps.proxy.logger.Logf(slogger.WARN, "failed to increment requestErrorsHook %v", hookErr)
@@ -549,7 +559,6 @@ func (ps *ProxySession) doLoop(mongoConn *MongoConnectionWrapper, retryError *Pr
 	defer mongoConn.Close(ps)
 
 	inExhaustMode := m.IsExhaust()
-	hasReceivedFirstResponse := false
 
 	for {
 		// Read message back from mongo
@@ -569,11 +578,8 @@ func (ps *ProxySession) doLoop(mongoConn *MongoConnectionWrapper, retryError *Pr
 
 		responseDurationTimerStart := time.Now()
 		if ps.isMetricsEnabled {
-			if !hasReceivedFirstResponse {
-				elaspedDbRoundTripTime := time.Since(dbRoundTripTimerStart).Seconds()
-				dbRoundTripHook.ObserveWithLabels(elaspedDbRoundTripTime, map[string]string{"operationType": metricOperationType})
-				hasReceivedFirstResponse = true
-			}
+			elaspedDbRoundTripTime := time.Since(dbRoundTripTimerStart).Seconds()
+			totalDBRoundtripTime += elaspedDbRoundTripTime
 		}
 
 		ps.logTrace(ps.proxy.logger, ps.proxy.Config.TraceConnPool, "read data from mongo conn %v", mongoConn.conn.ID())
