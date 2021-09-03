@@ -560,9 +560,17 @@ func (ps *ProxySession) doLoop(mongoConn *MongoConnectionWrapper, retryError *Pr
 
 	inExhaustMode := m.IsExhaust()
 
+	// log the inital time the db took to respond to WriteWireMessage
+	// note this will include networking time / buffering but it should give us a good order magnitute estimate of db time
+	if ps.isMetricsEnabled {
+		elaspedDbRoundTripTime := time.Since(dbRoundTripTimerStart).Seconds()
+		totalDBRoundtripTime += elaspedDbRoundTripTime
+	}
+
 	for {
 		// Read message back from mongo
 		ps.logTrace(ps.proxy.logger, ps.proxy.Config.TraceConnPool, "reading data from mongo conn id=%v remoteRs=%s", mongoConn.conn.ID(), remoteRs)
+		dbRoundTripTimerStart = time.Now()
 		ret, err := mongoConn.conn.ReadWireMessage(ps.proxy.Context, nil)
 		if err != nil {
 			ps.logTrace(ps.proxy.logger, ps.proxy.Config.TraceConnPool, "error reading wire message mongo conn id=%v remoteRs=%s. err=%v", mongoConn.conn.ID(), remoteRs, err)
@@ -578,6 +586,8 @@ func (ps *ProxySession) doLoop(mongoConn *MongoConnectionWrapper, retryError *Pr
 
 		responseDurationTimerStart := time.Now()
 		if ps.isMetricsEnabled {
+			// now track the time the db takes to respond to each subsequent message
+			// note this will include networking time / buffering but it should give us a good order magnitute estimate of db time
 			elaspedDbRoundTripTime := time.Since(dbRoundTripTimerStart).Seconds()
 			totalDBRoundtripTime += elaspedDbRoundTripTime
 		}
